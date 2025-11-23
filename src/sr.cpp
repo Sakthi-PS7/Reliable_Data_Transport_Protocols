@@ -1,0 +1,203 @@
+#include "../include/simulator.h"
+
+/* ******************************************************************
+ ALTERNATING BIT AND GO-BACK-N NETWORK EMULATOR: VERSION 1.1  J.F.Kurose
+
+   This code should be used for PA2, unidirectional data transfer 
+   protocols (from A to B). Network properties:
+   - one way network delay averages five time units (longer if there
+     are other messages in the channel for GBN), but can be larger
+   - packets can be corrupted (either the header or the data portion)
+     or lost, according to user-defined probabilities
+   - packets will be delivered in the order in which they were sent
+     (although some can be lost).
+**********************************************************************/
+
+/********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
+
+#include <iostream>
+#include <cstring>
+#include <map>
+#include <queue>
+using namespace std;
+
+//defining variables
+int message_buffer_size = 1000; 
+float timeout = 20.0; 
+int base = 0;                      
+int next_seqnum = 0;
+int expected_seqnum = 0;  
+int b_window;   
+queue<struct msg> message_buffer;         
+map<int, struct pkt> window;  
+map<int, float> timestamps; 
+map<int, bool> ack_received; 
+map<int, struct pkt> b_buffer;   
+map<int, bool> b_received;       
+
+// function to calculate the checksum
+int calculate_checksum(const struct pkt &packet) 
+{
+    int checksum = packet.seqnum + packet.acknum;
+    for (int i = 0; i < 20; i++) 
+    {
+        checksum += packet.payload[i];
+    }
+    return checksum;
+}
+
+void A_output(struct msg message) 
+{
+    if (message_buffer.size() >= message_buffer_size)
+    { 
+        printf("Buffer exceeded");
+        return;
+    }
+    message_buffer.push(message);
+    while (next_seqnum < base + getwinsize() && !message_buffer.empty()) 
+    {
+        struct msg message = message_buffer.front();
+        message_buffer.pop();
+        struct pkt packet;
+        packet.seqnum = next_seqnum;
+        packet.acknum = 0;
+        strncpy(packet.payload, message.data, 20);
+        packet.checksum = calculate_checksum(packet);
+        window[next_seqnum] = packet;
+        ack_received[next_seqnum] = false;
+
+        if (window.find(next_seqnum) != window.end()) 
+        {
+            tolayer3(0, window[next_seqnum]);
+            timestamps[next_seqnum] = get_sim_time(); 
+
+            if (next_seqnum == base) {
+                starttimer(0, timeout);
+            }
+        }
+
+        next_seqnum++;
+    }
+}
+
+void A_input(struct pkt packet) 
+{
+    if (packet.checksum != calculate_checksum(packet) || packet.acknum < base || packet.acknum >= base + getwinsize()) 
+    {
+        return;
+    }
+    ack_received[packet.acknum] = true;
+
+    while (ack_received[base]) 
+    {
+        window.erase(base);
+        timestamps.erase(base);
+        ack_received.erase(base);
+        base++;
+    }
+
+    if (base < next_seqnum) 
+    {
+        float remaining_time = timeout - (get_sim_time() - timestamps[base]);
+        if (remaining_time > 0) 
+        {
+            starttimer(0, remaining_time);
+        } 
+        else 
+        {
+            if (window.find(base) != window.end()) 
+            {
+                tolayer3(0, window[base]);
+                timestamps[base] = get_sim_time(); 
+                starttimer(0, timeout);
+            }
+        }
+    } 
+    else 
+    {
+        stoptimer(0);
+    }
+
+    while (next_seqnum < base + getwinsize() && !message_buffer.empty()) 
+    {
+        struct msg message = message_buffer.front();
+        message_buffer.pop();
+        struct pkt packet;
+        packet.seqnum = next_seqnum;
+        packet.acknum = 0;
+        strncpy(packet.payload, message.data, 20);
+        packet.checksum = calculate_checksum(packet);
+        window[next_seqnum] = packet;
+        ack_received[next_seqnum] = false;
+
+        if (window.find(next_seqnum) != window.end()) 
+        {
+            tolayer3(0, window[next_seqnum]);
+            timestamps[next_seqnum] = get_sim_time(); 
+
+            if (next_seqnum == base) {
+                starttimer(0, timeout);
+            }
+        }
+
+        next_seqnum++;
+    }
+}
+
+void A_timerinterrupt() 
+{
+     printf("Timeout, retransmit the first unACKed packet in current window");
+    if (!ack_received[base]) 
+    {
+        if (window.find(base) != window.end()) 
+        {
+            tolayer3(0, window[base]);
+            timestamps[base] = get_sim_time(); 
+            starttimer(0, timeout);
+        }
+    }
+    starttimer(0, timeout);
+}
+
+void A_init() 
+{
+    base = 0;
+    next_seqnum = 0;
+    window.clear();
+    timestamps.clear();
+    ack_received.clear();
+    while (!message_buffer.empty()) 
+    {
+        message_buffer.pop();
+    }
+}
+
+void B_input(struct pkt packet) 
+{
+    if (packet.checksum != calculate_checksum(packet) || packet.seqnum < expected_seqnum || packet.seqnum >= expected_seqnum + b_window) 
+    {
+        return;
+    }
+    b_buffer[packet.seqnum] = packet;
+    b_received[packet.seqnum] = true;
+    while (b_received[expected_seqnum]) 
+    {
+        tolayer5(1, b_buffer[expected_seqnum].payload);
+        b_received.erase(expected_seqnum);
+        b_buffer.erase(expected_seqnum);
+        expected_seqnum++;
+    }
+    struct pkt ack_packet;
+    ack_packet.seqnum = 0;
+    ack_packet.acknum = packet.seqnum;
+    ack_packet.checksum = calculate_checksum(ack_packet);
+    tolayer3(1, ack_packet);
+}
+
+void B_init() 
+{
+    expected_seqnum = 0;
+    b_window = getwinsize();
+    b_buffer.clear();
+    b_received.clear();
+}
